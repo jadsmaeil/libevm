@@ -42,7 +42,7 @@ type handler interface {
 	beforeWork(jobs []*job)
 	prefetch(libevm.StateReader, *prefetch)
 	nullResult(*job)
-	process(libevm.StateReader, *process)
+	process(vm.StateDB, *process)
 	postProcess()
 	finishBlock(vm.StateDB, *types.Block, types.Receipts)
 }
@@ -113,12 +113,12 @@ func New(prefetchers, processors int) *Processor {
 	p.workers.Add(workers)       // for shutdown via [Processor.Close]
 	p.stateShare.wg.Add(workers) // for readiness of [Processor.worker] loops
 	for range prefetchers {
-		go worker(p, p.prefetch, func(sdb libevm.StateReader, job *prefetch) {
+		go worker(p, p.prefetch, func(sdb vm.StateDB, job *prefetch) {
 			job.handler.prefetch(sdb, job)
 		})
 	}
 	for range processors {
-		go worker(p, p.process, func(sdb libevm.StateReader, job *process) {
+		go worker(p, p.process, func(sdb vm.StateDB, job *process) {
 			job.handler.process(sdb, job)
 		})
 	}
@@ -149,7 +149,7 @@ func (s *stateDBSharer) distribute(sdb *state.StateDB) {
 	<-s.sdb
 }
 
-func worker[J ~job](p *Processor, work <-chan *J, do func(libevm.StateReader, *J)) {
+func worker[J ~job](p *Processor, work <-chan *J, do func(vm.StateDB, *J)) {
 	defer p.workers.Done()
 
 	var sdb *state.StateDB

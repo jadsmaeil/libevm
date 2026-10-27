@@ -108,7 +108,7 @@ func (r *recorder) Prefetch(sdb libevm.StateReader, tx IndexedTx, cd commonData)
 	}
 }
 
-func (r *recorder) Process(sdb libevm.StateReader, tx IndexedTx, cd commonData, data prefetched) recorded {
+func (r *recorder) Process(sdb vm.StateDB, tx IndexedTx, cd commonData, data prefetched) recorded {
 	if diff := gocmp.Diff(cd, data.common); diff != "" {
 		r.tb.Errorf("Mismatched CommonData propagation to Handler methods; diff (-Process, +Prefetch):\n%s", diff)
 	}
@@ -535,7 +535,7 @@ type expensive struct {
 func (expensive) BeforeBlock(libevm.StateReader, *types.Header) int     { return 0 }
 func (e expensive) Schedule(IndexedTx, int) (Schedule, bool)            { return Schedule{Gas: e.gasCost}, true }
 func (expensive) Prefetch(libevm.StateReader, IndexedTx, int) int       { return 0 }
-func (expensive) Process(libevm.StateReader, IndexedTx, int, int) int   { return 0 }
+func (expensive) Process(vm.StateDB, IndexedTx, int, int) int           { return 0 }
 func (expensive) PostProcess(int, Results[int]) int                     { return 0 }
 func (expensive) AfterBlock(StateDB, int, *types.Block, types.Receipts) {}
 

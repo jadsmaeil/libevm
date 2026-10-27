@@ -95,7 +95,7 @@ type Handler[CommonData, Data, Result, Aggregated any] interface {
 	// precompile will block until Process() returns. While this guarantees the
 	// availability of pre-processed results, it is also the hot path for EVM
 	// transactions.
-	Process(libevm.StateReader, IndexedTx, CommonData, Data) Result
+	Process(vm.StateDB, IndexedTx, CommonData, Data) Result
 	// PostProcess is called concurrently with all calls to Process(). It allows
 	// for online aggregation of results into a format ready for writing to
 	// state.
@@ -237,7 +237,7 @@ func (w *wrapper[CD, D, R, A]) prefetch(sdb libevm.StateReader, job *prefetch) {
 	w.data[job.tx.Index].Put(w.Prefetch(sdb, job.tx, w.common.Peek()))
 }
 
-func (w *wrapper[CD, D, R, A]) process(sdb libevm.StateReader, job *process) {
+func (w *wrapper[CD, D, R, A]) process(sdb vm.StateDB, job *process) {
 	defer w.txsBeingProcessed.Done()
 
 	idx := job.tx.Index
