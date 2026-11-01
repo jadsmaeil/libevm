@@ -241,7 +241,12 @@ func (w *wrapper[CD, D, R, A]) process(sdb vm.StateDB, job *process) {
 	defer w.txsBeingProcessed.Done()
 
 	idx := job.tx.Index
-	val := w.Process(sdb, job.tx, w.common.Peek(), w.data[idx].Take())
+
+	val := func() R {
+		snapShot := sdb.Snapshot()
+		defer sdb.RevertToSnapshot(snapShot)
+		return w.Process(sdb, job.tx, w.common.Peek(), w.data[idx].Take())
+	}()
 	r := result[R]{
 		tx:  job.tx,
 		val: &val,
