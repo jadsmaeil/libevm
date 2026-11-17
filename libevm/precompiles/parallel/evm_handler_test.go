@@ -14,15 +14,19 @@ func makeEVMRequestTupleForTest(
 	precompile common.Address,
 	target common.Address,
 	input []byte,
+	gasLimit uint64,
 ) types.AccessTuple {
 	chunkCount := (len(input) + 31) / 32
 	keys := make([]common.Hash, 2+chunkCount)
 
-	// store the 20 byte target address in the last 20 bytes of keys[0]
-	copy(keys[0][12:], target[:])
+	// store the 20 byte target address
+	copy(keys[0][0:20], target[:])
 
-	// store the calldata length in the last 8 bytes
-	binary.BigEndian.PutUint64(keys[1][24:], uint64(len(input)))
+	// store the calldata length
+	binary.BigEndian.PutUint64(keys[0][20:28], uint64(len(input)))
+
+	// store gas limit in keys[1]
+	binary.BigEndian.PutUint64(keys[1][24:], gasLimit)
 
 	// store the calldata in 32 byte chunk. the final key remain zero padded
 
@@ -42,50 +46,52 @@ func makeEVMRequestTupleForTest(
 	}
 }
 
-func IndexedTxWithAccessListForTest(accessList types.AccessList) IndexedTx {
+func indexedTxWithAccessListForTest(accessList types.AccessList) IndexedTx {
 	return IndexedTx{
-		Transaction: types.NewTx(&types.AccessListTx{AccessList: accessList,
-		}),
+		Transaction: types.NewTx(&types.AccessListTx{AccessList: accessList}),
 	}
 }
 
 func TestParseEVMRequests_DataChunkBoundaries(t *testing.T) {
 	precompile := common.Address{0x10}
 	target := common.Address{0x20}
+	gasLimit := uint64(100_000)
 
-	for _, length := range []int{0,1,31,32,33} {
-		t.Run(fmt.Sprintf("length_%d", length), func(t *testing.T){
+	for _, length := range []int{0, 1, 31, 32, 33} {
+		t.Run(fmt.Sprintf("length_%d", length), func(t *testing.T) {
 			input := make([]byte, length)
 			for i := range input {
 				input[i] = byte(i + 1)
 			}
-			tuple := makeEVMRequestTupleForTest(precompile, target, input)
-			tx := IndexedTxWithAccessListForTest(types.AccessList{tuple})
+			tuple := makeEVMRequestTupleForTest(precompile, target, input, gasLimit)
+			tx := indexedTxWithAccessListForTest(types.AccessList{tuple})
 
 			got, ok := parseEVMRequests(tx, precompile, 4)
 			require.True(t, ok)
 			require.Len(t, got, 1)
 			require.Equal(t, target, got[0].target)
 			require.Equal(t, input, got[0].input)
+			require.Equal(t, gasLimit, got[0].gasLimit)
 		})
 	}
 }
 
-func TestParseEVMRequests_MultipleRequestsAndUnrelatedTuple(t *testing.T){
+func TestParseEVMRequests_MultipleRequestsAndUnrelatedTuple(t *testing.T) {
 	precompile := common.Address{0x10}
 	otherAddress := common.Address{0x11}
 	firstTarget := common.Address{0x20}
 	secondTarget := common.Address{0x21}
 	firstInput := []byte{0xaa, 0xbb}
 	secondInput := []byte{0xcc}
+	gasLimit := uint64(100_000)
 
-	accessList := types.AccessList {
-		makeEVMRequestTupleForTest(precompile, firstTarget, firstInput),
-		makeEVMRequestTupleForTest(otherAddress, common.Address{0x30}, []byte{0xdd}),
-		makeEVMRequestTupleForTest(precompile, secondTarget, secondInput),
+	accessList := types.AccessList{
+		makeEVMRequestTupleForTest(precompile, firstTarget, firstInput, gasLimit),
+		makeEVMRequestTupleForTest(otherAddress, common.Address{0x30}, []byte{0xdd}, gasLimit),
+		makeEVMRequestTupleForTest(precompile, secondTarget, secondInput, gasLimit),
 	}
 
-	tx := IndexedTxWithAccessListForTest(accessList)
+	tx := indexedTxWithAccessListForTest(accessList)
 
 	got, ok := parseEVMRequests(tx, precompile, 2)
 	require.True(t, ok)
@@ -95,4 +101,3 @@ func TestParseEVMRequests_MultipleRequestsAndUnrelatedTuple(t *testing.T){
 	require.Equal(t, secondTarget, got[1].target)
 	require.Equal(t, secondInput, got[1].input)
 }
-

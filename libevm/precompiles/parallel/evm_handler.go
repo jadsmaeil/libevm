@@ -8,13 +8,15 @@ import (
 	"github.com/ava-labs/libevm/core"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/core/vm"
+	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/libevm"
 	"github.com/ava-labs/libevm/params"
 )
 
 type evmRequest struct {
-	target common.Address
-	input  []byte
+	target   common.Address
+	input    []byte
+	gasLimit uint64
 }
 
 type evmRequests []evmRequest
@@ -25,17 +27,46 @@ type EVMHandler struct {
 
 	PrecompileAddress common.Address
 	MaxRequests       int
-	GasCap            uint64
+	MaxGasPerRequest  uint64
 	Priority          uint64
 }
 
 type EVMCallResult struct {
-	Ret []byte
-	Err error
+	Ret          []byte
+	RemainingGas uint64
+	Err          error
 }
 
 type EVMResult struct {
 	Requests []EVMCallResult
+}
+
+const targetCallRevertedSignature = "TargetCallReverted(uint64,bytes)"
+
+var targetCallRevertedSelector = crypto.Keccak256([]byte(targetCallRevertedSignature))[:4]
+
+func encodeTargetCallReverted(index uint64, revertData []byte) []byte {
+	paddedLength := len(revertData)
+
+	if remainder := paddedLength % 32; remainder != 0 {
+		paddedLength += 32 - remainder
+	}
+
+	// Selector + two API argument words + the dynamic bytes length and data
+	out := make([]byte, 4+32+32+32+paddedLength)
+	copy(out[:4], targetCallRevertedSelector)
+
+	// uint64 request index, left padded to one 32-byte ABI word
+	binary.BigEndian.PutUint64(out[4+24:4+32], index)
+
+	// offset to the dynamic bytes data, measured from the start of the arguments.
+	binary.BigEndian.PutUint64(out[4+32+24:4+64], 64)
+
+	// dynamic bytes length, followed by the original revert data.
+	binary.BigEndian.PutUint64(out[4+64+24:4+96], uint64(len(revertData)))
+	copy(out[4+96:], revertData)
+
+	return out
 }
 
 func parseEVMRequests(tx IndexedTx, precompile common.Address, maxRequests int) (evmRequests, bool) {
@@ -56,22 +87,31 @@ func parseEVMRequests(tx IndexedTx, precompile common.Address, maxRequests int) 
 		if len(keys) < 2 {
 			return nil, false
 		}
-		// key[0] is 32 bytes. 12 zero bytes followed by 20-byte address
-		addressWord := keys[0]
-		for _, b := range addressWord[:12] {
-			if b != 0 {
-				return nil, false
-			}
-		}
-		target := common.BytesToAddress(addressWord[12:])
 
-		lengthWord := keys[1]
-		for _, b := range lengthWord[:24] {
+		// key[0] is 32 bytes. 20 bytes target address, 8 bytes length of call data, 4 zero padding.
+		header := keys[0]
+
+		target := common.BytesToAddress(header[0:20])
+		length := binary.BigEndian.Uint64(header[20:28])
+
+		for _, b := range header[28:32] {
 			if b != 0 {
 				return nil, false
 			}
 		}
-		length := binary.BigEndian.Uint64(lengthWord[24:])
+
+		gasLimitWord := keys[1]
+
+		for _, b := range gasLimitWord[0:24] {
+			if b != 0 {
+				return nil, false
+			}
+		}
+
+		gasLimit := binary.BigEndian.Uint64(gasLimitWord[24:])
+		if gasLimit == 0 {
+			return nil, false
+		}
 
 		maxInt := uint64(^uint(0) >> 1)
 		if length > maxInt {
@@ -109,8 +149,9 @@ func parseEVMRequests(tx IndexedTx, precompile common.Address, maxRequests int) 
 			}
 		}
 		requests = append(requests, evmRequest{
-			target: target,
-			input:  input,
+			target:   target,
+			input:    input,
+			gasLimit: gasLimit,
 		})
 	}
 	if len(requests) == 0 {
@@ -121,16 +162,22 @@ func parseEVMRequests(tx IndexedTx, precompile common.Address, maxRequests int) 
 
 func (h *EVMHandler) Schedule(tx IndexedTx, _ vm.BlockContext) (Schedule, bool) {
 	requests, ok := parseEVMRequests(tx, h.PrecompileAddress, h.MaxRequests)
-	if !ok || h.GasCap == 0 {
+	if !ok || h.MaxGasPerRequest == 0 {
 		return Schedule{}, false
 	}
-	count := uint64(len(requests))
-	if count > ^uint64(0)/h.GasCap {
-		return Schedule{}, false
+	var totalGas uint64
+	for _, request := range requests {
+		if request.gasLimit > h.MaxGasPerRequest {
+			return Schedule{}, false
+		}
+		if request.gasLimit > ^uint64(0)-totalGas {
+			return Schedule{}, false
+		}
+		totalGas += request.gasLimit
 	}
 	return Schedule{
 		Priority: h.Priority,
-		Gas:      count * h.GasCap,
+		Gas:      totalGas,
 	}, true
 }
 
@@ -175,8 +222,8 @@ func (h *EVMHandler) Process(sdb vm.StateDB, tx IndexedTx, blockContext vm.Block
 				vm.Config{},
 			)
 
-			ret, _, err := evm.StaticCall(vm.AccountRef(msg.From), request.target, request.input, h.GasCap)
-			return EVMCallResult{Ret: ret, Err: err}
+			ret, remainingGas, err := evm.StaticCall(vm.AccountRef(msg.From), request.target, request.input, request.gasLimit)
+			return EVMCallResult{Ret: ret, RemainingGas: remainingGas, Err: err}
 
 		}()
 	}
@@ -202,7 +249,7 @@ func (r EVMResult) PrecompileOutput(_ vm.PrecompileEnvironment, input []byte) ([
 		return result.Ret, nil
 	}
 	if errors.Is(result.Err, vm.ErrExecutionReverted) {
-		return result.Ret, result.Err
+		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted
 	}
 
 	return nil, result.Err

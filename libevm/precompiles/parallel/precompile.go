@@ -18,6 +18,7 @@ package parallel
 
 import "github.com/ava-labs/libevm/core/vm"
 
+
 // PrecompileResult is the interface required for a [Handler] to be converted
 // into a [vm.PrecompiledStatefulContract].
 type PrecompileResult interface {
