@@ -15,6 +15,7 @@ func makeEVMRequestTupleForTest(
 	target common.Address,
 	input []byte,
 	gasLimit uint64,
+	reader common.Address,
 ) types.AccessTuple {
 	chunkCount := (len(input) + 31) / 32
 	keys := make([]common.Hash, 2+chunkCount)
@@ -26,7 +27,10 @@ func makeEVMRequestTupleForTest(
 	binary.BigEndian.PutUint64(keys[0][20:28], uint64(len(input)))
 
 	// store gas limit in keys[1]
-	binary.BigEndian.PutUint64(keys[1][24:], gasLimit)
+	binary.BigEndian.PutUint64(keys[1][0:8], gasLimit)
+
+	// store reader
+	copy(keys[1][8:28], reader[:])
 
 	// store the calldata in 32 byte chunk. the final key remain zero padded
 
@@ -56,6 +60,7 @@ func TestParseEVMRequests_DataChunkBoundaries(t *testing.T) {
 	precompile := common.Address{0x10}
 	target := common.Address{0x20}
 	gasLimit := uint64(100_000)
+	reader := common.Address{0x30}
 
 	for _, length := range []int{0, 1, 31, 32, 33} {
 		t.Run(fmt.Sprintf("length_%d", length), func(t *testing.T) {
@@ -63,7 +68,7 @@ func TestParseEVMRequests_DataChunkBoundaries(t *testing.T) {
 			for i := range input {
 				input[i] = byte(i + 1)
 			}
-			tuple := makeEVMRequestTupleForTest(precompile, target, input, gasLimit)
+			tuple := makeEVMRequestTupleForTest(precompile, target, input, gasLimit, reader)
 			tx := indexedTxWithAccessListForTest(types.AccessList{tuple})
 
 			got, ok := parseEVMRequests(tx, precompile, 4)
@@ -84,11 +89,12 @@ func TestParseEVMRequests_MultipleRequestsAndUnrelatedTuple(t *testing.T) {
 	firstInput := []byte{0xaa, 0xbb}
 	secondInput := []byte{0xcc}
 	gasLimit := uint64(100_000)
+	reader := common.Address{0x40}
 
 	accessList := types.AccessList{
-		makeEVMRequestTupleForTest(precompile, firstTarget, firstInput, gasLimit),
-		makeEVMRequestTupleForTest(otherAddress, common.Address{0x30}, []byte{0xdd}, gasLimit),
-		makeEVMRequestTupleForTest(precompile, secondTarget, secondInput, gasLimit),
+		makeEVMRequestTupleForTest(precompile, firstTarget, firstInput, gasLimit, reader),
+		makeEVMRequestTupleForTest(otherAddress, common.Address{0x30}, []byte{0xdd}, gasLimit, reader),
+		makeEVMRequestTupleForTest(precompile, secondTarget, secondInput, gasLimit, reader),
 	}
 
 	tx := indexedTxWithAccessListForTest(accessList)

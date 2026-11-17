@@ -17,6 +17,7 @@ type evmRequest struct {
 	target   common.Address
 	input    []byte
 	gasLimit uint64
+	reader   common.Address
 }
 
 type evmRequests []evmRequest
@@ -32,9 +33,10 @@ type EVMHandler struct {
 }
 
 type EVMCallResult struct {
-	Ret          []byte
-	RemainingGas uint64
-	Err          error
+	Ret              []byte
+	RemainingGas     uint64
+	authorizedReader common.Address
+	Err              error
 }
 
 type EVMResult struct {
@@ -100,16 +102,17 @@ func parseEVMRequests(tx IndexedTx, precompile common.Address, maxRequests int) 
 			}
 		}
 
-		gasLimitWord := keys[1]
+		metadata := keys[1]
+		gasLimit := binary.BigEndian.Uint64(metadata[0:8])
+		reader := common.BytesToAddress(metadata[8:28])
 
-		for _, b := range gasLimitWord[0:24] {
+		for _, b := range metadata[28:32] {
 			if b != 0 {
 				return nil, false
 			}
 		}
 
-		gasLimit := binary.BigEndian.Uint64(gasLimitWord[24:])
-		if gasLimit == 0 {
+		if reader == (common.Address{}) || gasLimit == 0 {
 			return nil, false
 		}
 
@@ -152,6 +155,7 @@ func parseEVMRequests(tx IndexedTx, precompile common.Address, maxRequests int) 
 			target:   target,
 			input:    input,
 			gasLimit: gasLimit,
+			reader:   reader,
 		})
 	}
 	if len(requests) == 0 {
@@ -200,7 +204,10 @@ func (h *EVMHandler) Process(sdb vm.StateDB, tx IndexedTx, blockContext vm.Block
 	if err != nil {
 		results := make([]EVMCallResult, len(requests))
 		for i := range results {
-			results[i].Err = err
+			results[i] = EVMCallResult{
+				authorizedReader: requests[i].reader,
+				Err:              err,
+			}
 		}
 		return EVMResult{Requests: results}
 	}
@@ -223,14 +230,14 @@ func (h *EVMHandler) Process(sdb vm.StateDB, tx IndexedTx, blockContext vm.Block
 			)
 
 			ret, remainingGas, err := evm.StaticCall(vm.AccountRef(msg.From), request.target, request.input, request.gasLimit)
-			return EVMCallResult{Ret: ret, RemainingGas: remainingGas, Err: err}
+			return EVMCallResult{Ret: ret, RemainingGas: remainingGas, authorizedReader: request.reader, Err: err}
 
 		}()
 	}
 	return EVMResult{Requests: results}
 }
 
-func (r EVMResult) PrecompileOutput(_ vm.PrecompileEnvironment, input []byte) ([]byte, error) {
+func (r EVMResult) PrecompileOutput(env vm.PrecompileEnvironment, input []byte) ([]byte, error) {
 	if len(input) != 32 {
 		return nil, vm.ErrExecutionReverted
 	}
@@ -245,9 +252,14 @@ func (r EVMResult) PrecompileOutput(_ vm.PrecompileEnvironment, input []byte) ([
 	}
 
 	result := r.Requests[int(index)]
+	caller := env.Addresses().EVMSemantic.Caller
+	if caller != result.authorizedReader {
+		return nil, vm.ErrExecutionReverted
+	}
 	if result.Err == nil {
 		return result.Ret, nil
 	}
+
 	if errors.Is(result.Err, vm.ErrExecutionReverted) {
 		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted
 	}
@@ -255,8 +267,8 @@ func (r EVMResult) PrecompileOutput(_ vm.PrecompileEnvironment, input []byte) ([
 	return nil, result.Err
 }
 
-func (h *EVMHandler) PostProcess(_ vm.BlockContext, _ Results[EVMResult]) struct{} {
+func (h *EVMHandler) PostProcess(vm.BlockContext, Results[EVMResult]) struct{} {
 	return struct{}{}
 }
 
-func (h *EVMHandler) AfterBlock(_ StateDB, _ struct{}, _ *types.Block, _ types.Receipts) {}
+func (h *EVMHandler) AfterBlock(StateDB, struct{}, *types.Block, types.Receipts) {}
