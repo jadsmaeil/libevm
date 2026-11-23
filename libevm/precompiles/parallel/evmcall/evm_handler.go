@@ -2,7 +2,6 @@ package evmcall
 
 import (
 	"encoding/binary"
-	"errors"
 	"math"
 
 	"github.com/ava-labs/libevm/common"
@@ -48,11 +47,9 @@ type EVMCallResult struct {
 	Err              error
 }
 
-var _ parallel.PrecompileResult = EVMResult{}
+type EVMResult []EVMCallResult
 
-type EVMResult struct {
-	Requests []EVMCallResult
-}
+var _ parallel.PrecompileResult = EVMResult{}
 
 const targetCallRevertedSignature = "TargetCallReverted(uint64,bytes)"
 
@@ -212,14 +209,15 @@ func (h *EVMHandler) Process(sdb vm.StateDB, tx parallel.IndexedTx, blockContext
 	msg, err := core.TransactionToMessage(tx.Transaction, signer, blockContext.BaseFee)
 
 	if err != nil {
-		results := make([]EVMCallResult, len(requests))
+		results := make(EVMResult, len(requests))
 		for i := range results {
 			results[i] = EVMCallResult{
 				authorizedReader: requests[i].reader,
 				Err:              err,
 			}
 		}
-		return EVMResult{Requests: results}
+
+		return results
 	}
 
 	txContext := core.NewEVMTxContext(msg)
@@ -244,7 +242,7 @@ func (h *EVMHandler) Process(sdb vm.StateDB, tx parallel.IndexedTx, blockContext
 
 		}()
 	}
-	return EVMResult{Requests: results}
+	return results
 }
 
 func (r EVMResult) PrecompileOutput(env vm.PrecompileEnvironment, input []byte) ([]byte, error) {
@@ -257,24 +255,24 @@ func (r EVMResult) PrecompileOutput(env vm.PrecompileEnvironment, input []byte) 
 		}
 	}
 	index := binary.BigEndian.Uint64(input[24:])
-	if index >= uint64(len(r.Requests)) {
+	if index >= uint64(len(r)) {
 		return nil, vm.ErrExecutionReverted
 	}
 
-	result := r.Requests[int(index)]
+	result := r[int(index)]
 	caller := env.Addresses().EVMSemantic.Caller
 	if caller != result.authorizedReader {
 		return nil, vm.ErrExecutionReverted
 	}
-	if result.Err == nil {
-		return result.Ret, nil
-	}
-	// never wrap excution reverted. you have to return it specifically as that error.
-	if errors.Is(result.Err, vm.ErrExecutionReverted) {
-		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted
-	}
 
-	return nil, result.Err
+	switch result.Err {
+	case nil:
+		return result.Ret, nil
+	case vm.ErrExecutionReverted:
+		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted
+	default:
+		return nil, result.Err
+	}
 }
 
 func (h *EVMHandler) PostProcess(vm.BlockContext, parallel.Results[EVMResult]) struct{} {
