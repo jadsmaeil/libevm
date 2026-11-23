@@ -3,6 +3,7 @@ package evmcall
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core"
@@ -11,7 +12,6 @@ import (
 	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/libevm"
 	"github.com/ava-labs/libevm/params"
-
 )
 import parallel "github.com/ava-labs/libevm/libevm/precompiles/parallel"
 
@@ -35,10 +35,10 @@ type EVMHandler struct {
 }
 
 var _ parallel.Handler[
-    vm.BlockContext,
-    evmRequests,
-    EVMResult,
-    struct{},
+	vm.BlockContext,
+	evmRequests,
+	EVMResult,
+	struct{},
 ] = (*EVMHandler)(nil)
 
 type EVMCallResult struct {
@@ -127,8 +127,7 @@ func parseEVMRequests(tx parallel.IndexedTx, precompile common.Address, maxReque
 			return nil, false
 		}
 
-		maxInt := uint64(^uint(0) >> 1)
-		if length > maxInt {
+		if length > uint64(math.MaxInt) {
 			return nil, false
 		}
 
@@ -270,9 +269,9 @@ func (r EVMResult) PrecompileOutput(env vm.PrecompileEnvironment, input []byte) 
 	if result.Err == nil {
 		return result.Ret, nil
 	}
-	// never wrap excution reverted. you have to return it specifically as that error. 
+	// never wrap excution reverted. you have to return it specifically as that error.
 	if errors.Is(result.Err, vm.ErrExecutionReverted) {
-		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted 
+		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted
 	}
 
 	return nil, result.Err
