@@ -31,11 +31,12 @@ type EVMHandler struct {
 	MaxRequests       int
 	MaxGasPerRequest  uint64
 	Priority          uint64
+	requestsByTxHash  map[common.Hash]evmRequests
 }
 
 var _ parallel.Handler[
 	vm.BlockContext,
-	evmRequests,
+	struct{},
 	EVMResult,
 	struct{},
 ] = (*EVMHandler)(nil)
@@ -186,27 +187,35 @@ func (h *EVMHandler) Schedule(tx parallel.IndexedTx, _ vm.BlockContext) (paralle
 		}
 		totalGas += request.gasLimit
 	}
+
+	if h.requestsByTxHash == nil {
+		h.requestsByTxHash = make(map[common.Hash]evmRequests)
+	}
+	h.requestsByTxHash[tx.Hash()] = requests
+
 	return parallel.Schedule{
 		Priority: h.Priority,
 		Gas:      totalGas,
 	}, true
 }
 
-func (h *EVMHandler) Prefetch(_ libevm.StateReader, tx parallel.IndexedTx, _ vm.BlockContext) evmRequests {
-	requests, ok := parseEVMRequests(tx, h.PrecompileAddress, h.MaxRequests)
-	if !ok {
-		return nil
-	}
-	return requests
+func (h *EVMHandler) Prefetch(libevm.StateReader, parallel.IndexedTx, vm.BlockContext) struct{} {
+	return struct{}{}
 }
 
 func (h *EVMHandler) BeforeBlock(_ libevm.StateReader, header *types.Header) vm.BlockContext {
+	clear(h.requestsByTxHash)
 	return core.NewEVMBlockContext(header, h.ChainContext, nil)
 }
 
-func (h *EVMHandler) Process(sdb vm.StateDB, tx parallel.IndexedTx, blockContext vm.BlockContext, requests evmRequests) EVMResult {
+func (h *EVMHandler) Process(sdb vm.StateDB, tx parallel.IndexedTx, blockContext vm.BlockContext, _ struct{}) EVMResult {
 	signer := types.MakeSigner(h.ChainConfig, blockContext.BlockNumber, blockContext.Time)
 	msg, err := core.TransactionToMessage(tx.Transaction, signer, blockContext.BaseFee)
+
+	requests, ok := h.requestsByTxHash[tx.Hash()]
+	if !ok {
+		return nil
+	}
 
 	if err != nil {
 		results := make(EVMResult, len(requests))
