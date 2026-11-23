@@ -99,23 +99,24 @@ func parseEVMRequests(tx parallel.IndexedTx, precompile common.Address, maxReque
 			return nil, false
 		}
 
-		// key[0] is 32 bytes. 20 bytes target address, 8 bytes length of call data, 4 zero padding.
+		// key[0] is 32 bytes. 20 bytes target address, 8 bytes length of call data, and first 4 bytes of gas limit.
 		header := keys[0]
 
 		target := common.BytesToAddress(header[0:20])
 		length := binary.BigEndian.Uint64(header[20:28])
 
-		for _, b := range header[28:32] {
-			if b != 0 {
-				return nil, false
-			}
-		}
-
 		metadata := keys[1]
-		gasLimit := binary.BigEndian.Uint64(metadata[0:8])
-		reader := common.BytesToAddress(metadata[8:28])
 
-		for _, b := range metadata[28:32] {
+		// The gas limit is one big-endian uint64 split across the two keys.
+		var gasLimitBytes [8]byte
+		copy(gasLimitBytes[:4], header[28:32])
+		copy(gasLimitBytes[4:], metadata[0:4])
+
+		gasLimit := binary.BigEndian.Uint64(gasLimitBytes[:])
+
+		reader := common.BytesToAddress(metadata[4:24])
+
+		for _, b := range metadata[24:32] {
 			if b != 0 {
 				return nil, false
 			}

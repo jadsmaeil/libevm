@@ -27,11 +27,16 @@ func makeEVMRequestTupleForTest(
 	// store the calldata length
 	binary.BigEndian.PutUint64(keys[0][20:28], uint64(len(input)))
 
-	// store gas limit in keys[1]
-	binary.BigEndian.PutUint64(keys[1][0:8], gasLimit)
+	// Split the big-endian gas limit across the end of keys[0]
+	// and the beginning of keys[1].
+	var gasLimitBytes [8]byte
+	binary.BigEndian.PutUint64(gasLimitBytes[:], gasLimit)
+	copy(keys[0][28:32], gasLimitBytes[:4])
+	copy(keys[1][0:4], gasLimitBytes[4:])
 
 	// store reader
-	copy(keys[1][8:28], reader[:])
+	// The remaining keys[1][24:32] bytes stay zero as padding.
+	copy(keys[1][4:24], reader[:])
 
 	// store the calldata in 32 byte chunk. the final key remain zero padded
 
