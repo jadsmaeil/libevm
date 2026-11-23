@@ -1,4 +1,4 @@
-package parallel
+package evmcall
 
 import (
 	"encoding/binary"
@@ -11,7 +11,9 @@ import (
 	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/libevm"
 	"github.com/ava-labs/libevm/params"
+
 )
+import parallel "github.com/ava-labs/libevm/libevm/precompiles/parallel"
 
 type evmRequest struct {
 	target   common.Address
@@ -32,12 +34,21 @@ type EVMHandler struct {
 	Priority          uint64
 }
 
+var _ parallel.Handler[
+    vm.BlockContext,
+    evmRequests,
+    EVMResult,
+    struct{},
+] = (*EVMHandler)(nil)
+
 type EVMCallResult struct {
 	Ret              []byte
 	RemainingGas     uint64
 	authorizedReader common.Address
 	Err              error
 }
+
+var _ parallel.PrecompileResult = EVMResult{}
 
 type EVMResult struct {
 	Requests []EVMCallResult
@@ -71,7 +82,7 @@ func encodeTargetCallReverted(index uint64, revertData []byte) []byte {
 	return out
 }
 
-func parseEVMRequests(tx IndexedTx, precompile common.Address, maxRequests int) (evmRequests, bool) {
+func parseEVMRequests(tx parallel.IndexedTx, precompile common.Address, maxRequests int) (evmRequests, bool) {
 	if maxRequests <= 0 {
 		return nil, false
 	}
@@ -164,28 +175,28 @@ func parseEVMRequests(tx IndexedTx, precompile common.Address, maxRequests int) 
 	return requests, true
 }
 
-func (h *EVMHandler) Schedule(tx IndexedTx, _ vm.BlockContext) (Schedule, bool) {
+func (h *EVMHandler) Schedule(tx parallel.IndexedTx, _ vm.BlockContext) (parallel.Schedule, bool) {
 	requests, ok := parseEVMRequests(tx, h.PrecompileAddress, h.MaxRequests)
 	if !ok || h.MaxGasPerRequest == 0 {
-		return Schedule{}, false
+		return parallel.Schedule{}, false
 	}
 	var totalGas uint64
 	for _, request := range requests {
 		if request.gasLimit > h.MaxGasPerRequest {
-			return Schedule{}, false
+			return parallel.Schedule{}, false
 		}
 		if request.gasLimit > ^uint64(0)-totalGas {
-			return Schedule{}, false
+			return parallel.Schedule{}, false
 		}
 		totalGas += request.gasLimit
 	}
-	return Schedule{
+	return parallel.Schedule{
 		Priority: h.Priority,
 		Gas:      totalGas,
 	}, true
 }
 
-func (h *EVMHandler) Prefetch(_ libevm.StateReader, tx IndexedTx, _ vm.BlockContext) evmRequests {
+func (h *EVMHandler) Prefetch(_ libevm.StateReader, tx parallel.IndexedTx, _ vm.BlockContext) evmRequests {
 	requests, ok := parseEVMRequests(tx, h.PrecompileAddress, h.MaxRequests)
 	if !ok {
 		return nil
@@ -197,7 +208,7 @@ func (h *EVMHandler) BeforeBlock(_ libevm.StateReader, header *types.Header) vm.
 	return core.NewEVMBlockContext(header, h.ChainContext, nil)
 }
 
-func (h *EVMHandler) Process(sdb vm.StateDB, tx IndexedTx, blockContext vm.BlockContext, requests evmRequests) EVMResult {
+func (h *EVMHandler) Process(sdb vm.StateDB, tx parallel.IndexedTx, blockContext vm.BlockContext, requests evmRequests) EVMResult {
 	signer := types.MakeSigner(h.ChainConfig, blockContext.BlockNumber, blockContext.Time)
 	msg, err := core.TransactionToMessage(tx.Transaction, signer, blockContext.BaseFee)
 
@@ -229,7 +240,7 @@ func (h *EVMHandler) Process(sdb vm.StateDB, tx IndexedTx, blockContext vm.Block
 				vm.Config{},
 			)
 
-			ret, remainingGas, err := evm.StaticCall(vm.AccountRef(msg.From), request.target, request.input, request.gasLimit)
+			ret, remainingGas, err := evm.StaticCall(vm.AccountRef(request.reader), request.target, request.input, request.gasLimit)
 			return EVMCallResult{Ret: ret, RemainingGas: remainingGas, authorizedReader: request.reader, Err: err}
 
 		}()
@@ -259,16 +270,16 @@ func (r EVMResult) PrecompileOutput(env vm.PrecompileEnvironment, input []byte) 
 	if result.Err == nil {
 		return result.Ret, nil
 	}
-
+	// never wrap excution reverted. you have to return it specifically as that error. 
 	if errors.Is(result.Err, vm.ErrExecutionReverted) {
-		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted
+		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted 
 	}
 
 	return nil, result.Err
 }
 
-func (h *EVMHandler) PostProcess(vm.BlockContext, Results[EVMResult]) struct{} {
+func (h *EVMHandler) PostProcess(vm.BlockContext, parallel.Results[EVMResult]) struct{} {
 	return struct{}{}
 }
 
-func (h *EVMHandler) AfterBlock(StateDB, struct{}, *types.Block, types.Receipts) {}
+func (h *EVMHandler) AfterBlock(parallel.StateDB, struct{}, *types.Block, types.Receipts) {}

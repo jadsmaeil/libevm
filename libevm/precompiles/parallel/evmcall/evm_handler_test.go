@@ -1,4 +1,4 @@
-package parallel
+package evmcall
 
 import (
 	"encoding/binary"
@@ -9,6 +9,7 @@ import (
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/stretchr/testify/require"
 )
+import parallel "github.com/ava-labs/libevm/libevm/precompiles/parallel"
 
 func makeEVMRequestTupleForTest(
 	precompile common.Address,
@@ -50,8 +51,8 @@ func makeEVMRequestTupleForTest(
 	}
 }
 
-func indexedTxWithAccessListForTest(accessList types.AccessList) IndexedTx {
-	return IndexedTx{
+func indexedTxWithAccessListForTest(accessList types.AccessList) parallel.IndexedTx {
+	return parallel.IndexedTx{
 		Transaction: types.NewTx(&types.AccessListTx{AccessList: accessList}),
 	}
 }
