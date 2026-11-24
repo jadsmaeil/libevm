@@ -1,6 +1,7 @@
 package evmcall
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 
@@ -11,8 +12,9 @@ import (
 	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/libevm"
 	"github.com/ava-labs/libevm/params"
+
+	parallel "github.com/ava-labs/libevm/libevm/precompiles/parallel"
 )
-import parallel "github.com/ava-labs/libevm/libevm/precompiles/parallel"
 
 type evmRequest struct {
 	target   common.Address
@@ -56,6 +58,10 @@ const targetCallRevertedSignature = "TargetCallReverted(uint64,bytes)"
 
 var targetCallRevertedSelector = crypto.Keccak256([]byte(targetCallRevertedSignature))[:4]
 
+const getResultSignature = "getResult(uint64)"
+
+var getResultSelector = crypto.Keccak256([]byte(getResultSignature))[:4]
+
 func encodeTargetCallReverted(index uint64, revertData []byte) []byte {
 	paddedLength := len(revertData)
 
@@ -77,6 +83,44 @@ func encodeTargetCallReverted(index uint64, revertData []byte) []byte {
 	binary.BigEndian.PutUint64(out[4+64+24:4+96], uint64(len(revertData)))
 	copy(out[4+96:], revertData)
 
+	return out
+}
+
+func parseGetResultInput(input []byte) (uint64, bool) {
+	if len(input) != 4+32 {
+		return 0, false
+	}
+	if !bytes.Equal(input[:4], getResultSelector) {
+		return 0, false
+	}
+
+	argument := input[4:]
+
+	for _, b := range argument[:24] {
+		if b != 0 {
+			return 0, false
+		}
+	}
+	return binary.BigEndian.Uint64(argument[24:]), true
+
+}
+
+func encodeABIBytes(value []byte) []byte {
+	paddedLength := len(value)
+
+	if remainder := paddedLength % 32; remainder != 0 {
+		paddedLength += 32 - remainder
+	}
+
+	out := make([]byte, 64+paddedLength)
+
+	// Offset to the bytes data, measured from the start of the return data.
+	binary.BigEndian.PutUint64(out[24:32], 32)
+
+	// Length of the bytes value.
+	binary.BigEndian.PutUint64(out[56:64], uint64(len(value)))
+
+	copy(out[64:], value)
 	return out
 }
 
@@ -256,15 +300,11 @@ func (h *EVMHandler) Process(sdb vm.StateDB, tx parallel.IndexedTx, blockContext
 }
 
 func (r EVMResult) PrecompileOutput(env vm.PrecompileEnvironment, input []byte) ([]byte, error) {
-	if len(input) != 32 {
+
+	index, ok := parseGetResultInput(input)
+	if !ok {
 		return nil, vm.ErrExecutionReverted
 	}
-	for _, b := range input[:24] {
-		if b != 0 {
-			return nil, vm.ErrExecutionReverted
-		}
-	}
-	index := binary.BigEndian.Uint64(input[24:])
 	if index >= uint64(len(r)) {
 		return nil, vm.ErrExecutionReverted
 	}
@@ -277,7 +317,7 @@ func (r EVMResult) PrecompileOutput(env vm.PrecompileEnvironment, input []byte) 
 
 	switch result.Err {
 	case nil:
-		return result.Ret, nil
+		return encodeABIBytes(result.Ret), nil
 	case vm.ErrExecutionReverted:
 		return encodeTargetCallReverted(index, result.Ret), vm.ErrExecutionReverted
 	default:
